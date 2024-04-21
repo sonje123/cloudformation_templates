@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of Lambda function
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  Environment:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  PrivateSubnet1Id:
+    Description: The ID of the first private subnet
+    Type: String
+  PrivateSubnet2Id:
+    Description: The ID of the second private subnet
+    Type: String
+  SecurityGroup:
+    Description: The security group that will be used for Lambda
+    Type: String
+  RedshiftSecret:
+    Description: The secret ARN
+    Type: String
+  ProvisionedConcurrentExecutions:
+    Description: Provisioned concurrency for Lambda
+    Type: String
+  EmailAlertsSNSTopic:
+    Description: ARN of the SNS Topic used for Email Alerts
+    Type: String
+  ModelPrefix:
+    Description: Prefix used for Lambda function
+    Type: String
+Resources:
+  LambdaParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: 'Stores non secret variables used by Lambda function code'
+      Name: !Sub /mlops/lambda/variables/${Environment}/${ModelPrefix}
+      Value: '{"key": "value"}'
+      Type: String
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    # checkov:skip=CKV_AWS_115:Concurrent execution limit not required
+    # checkov:skip=CKV_AWS_173:Environment variable encryption not required since value is not sensitive
+    # checkov:skip=CKV_AWS_116: SQS DLQ not required
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: DescribeStatement and GetStatementResult don't support specific resource block
+          - id: W89
+            reason: False positive https://github.com/stelligent/cfn_nag/issues/601
+          - id: W92
+            reason: Concurrent execution limit not required
+    Properties:
+      FunctionName: !Sub '${ModelPrefix}-lambda-${Environment}'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref SecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Handler: lambda_function.lambda_handler
+      Policies:
+        - Statement:
+            - Sid: RedshiftDataQueryExecute
+              Effect: Allow
+              Action:
+                - redshift-data:ExecuteStatement
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:redshift:${AWS::Region}:${AWS::AccountId}:cluster:*'
+                - !Sub 'arn:${AWS::Partition}:redshift-serverless:${AWS::Region}:${AWS::AccountId}:workgroup/*'
+            - Sid: RedshiftDataQueryRead
+              Effect: Allow
+              Action:
+                - redshift-data:DescribeStatement
+                - redshift-data:GetStatementResult
+              Resource: '*'
+            - Sid: CloudWatchMetrics
+              Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter*
+              Resource: !Sub arn:aws:ssm:*:*:parameter/mlops/lambda/variables/${Environment}/${ModelPrefix}
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref RedshiftSecret
+          ENVIRONMENT: !Sub ${Environment}
+          PARAMETER_NAME: !Sub /mlops/lambda/variables/${Environment}/${ModelPrefix}
+      Runtime: python3.9
+      Timeout: 30
+      InlineCode: |
+        """Dummy Lambda TODO"""
+
+
+        def lambda_handler(_, __):
+            """
+            Dummy Lambda function
+            :param _: Event body passed to Lambda
+            :param __: Context object passed to Lambda
+            :return: Dummy event
+            """
+            return {
+                "isBase64Encoded": False,
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": """[
+          {
+            "site": 1,
+            "itemNo": 1,
+            "itemNoSim": 1,
+            "rank": 1
+          }
+        ]""",
+            }
+
+  LambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !GetAtt LambdaFunction.Arn
+
+  LambdaAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      FunctionName: !GetAtt LambdaFunction.Arn
+      FunctionVersion: !GetAtt LambdaVersion.Version
+      Name: apitarget
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrentExecutions
+
+  CustomLambdaExceptionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Alarm needs custom name
+    Properties:
+      ActionsEnabled: True
+      AlarmName: !Sub ${Environment}-sgws-${ModelPrefix}-api-lambda-exception-alarm
+      AlarmDescription: !Sub "The lambda function sgws-${ModelPrefix}-lambda-${Environment} attached to the ${ModelPrefix} Consumption API has encountered an exception. Please check the CloudWatch Logs for more details."
+      Namespace: !Sub ${Environment}-sgws-${ModelPrefix}-alarms
+      MetricName: !Sub ${Environment}-exception-alert-sgws-${ModelPrefix}-lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub ${ModelPrefix}-lambda-${Environment}
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      EvaluationPeriods: 1
+      Threshold: 1
+      Period: 60
+      Statistic: SampleCount
+      Unit: Count
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref EmailAlertsSNSTopic
+
+  ErrorMetricLambdaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Alarm needs custom name
+    Properties:
+      ActionsEnabled: True
+      AlarmName: !Sub ${Environment}-sgws-${ModelPrefix}-api-lambda-failure
+      AlarmDescription: !Sub "The lambda function sgws-${ModelPrefix}-lambda-${Environment} attached to the ${ModelPrefix} Consumption API has encountered an unhandled error. Please check the CloudWatch Logs for more details."
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub ${ModelPrefix}-lambda-${Environment}
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      EvaluationPeriods: 1
+      Threshold: 1
+      Period: 60
+      Statistic: Sum
+      Unit: Count
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref EmailAlertsSNSTopic
+
+  ThrottlesMetricLambdaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Alarm needs custom name
+    Properties:
+      ActionsEnabled: True
+      AlarmName: !Sub ${Environment}-sgws-${ModelPrefix}-api-lambda-throttle
+      AlarmDescription: !Sub "The lambda function sgws-${ModelPrefix}-lambda-${Environment} attached to the ${ModelPrefix} Consumption API has been throttled. Please check the CloudWatch Logs for more details."
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub ${ModelPrefix}-lambda-${Environment}
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      EvaluationPeriods: 1
+      Threshold: 1
+      Period: 60
+      Statistic: Sum
+      Unit: Count
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref EmailAlertsSNSTopic
+
+Outputs:
+  LambdaFunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt LambdaFunction.Arn
+  LambdaFunctionArnWithAlias:
+    Description: Lambda Function ARN with Alias
+    Value: !Sub '${LambdaFunction.Arn}:apitarget'
+  LambdaFunctionRoleArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt LambdaFunctionRole.Arn

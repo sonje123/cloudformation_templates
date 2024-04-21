@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of API Gateway
+Transform: AWS::Serverless-2016-10-31
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001
+Parameters:
+  Environment:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  VpcEndpointId:
+    Description: ID of VPC endpoint used for API Gateway
+    Type: String
+  ArtifactsBucket:
+    Description: Name of the artifacts bucket where nested templates are stored
+    Type: String
+  FbtLambdaFunctionArn:
+    Description: ARN of FBT Lambda function integerated with API
+    Type: String
+  ClyLambdaFunctionArn:
+    Description: ARN of CLY Lambda function integerated with API
+    Type: String
+  R2rLambdaFunctionArn:
+    Description: ARN of R2R Lambda function integerated with API
+    Type: String
+  PplLambdaFunctionArn:
+    Description: ARN of PPL Lambda function integerated with API
+    Type: String
+Resources:
+  ApiGatewayInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'apigateway.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 'lambda:InvokeFunction'
+                Resource: !Ref FbtLambdaFunctionArn
+              - Effect: 'Allow'
+                Action: 'lambda:InvokeFunction'
+                Resource: !Ref ClyLambdaFunctionArn
+              - Effect: 'Allow'
+                Action: 'lambda:InvokeFunction'
+                Resource: !Ref R2rLambdaFunctionArn
+              - Effect: 'Allow'
+                Action: 'lambda:InvokeFunction'
+                Resource: !Ref PplLambdaFunctionArn
+
+  AccessLogsEncryptionkey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:*:*'
+          - Action: kms:*
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  - - "arn:"
+                    - Ref: AWS::Partition
+                    - ":iam::"
+                    - Ref: AWS::AccountId
+                    - :root
+            Resource: "*"
+        Version: "2012-10-17"
+  CloudWatchRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+  AccountLoggingSettings:
+    Type: 'AWS::ApiGateway::Account'
+    Properties:
+      CloudWatchRoleArn: !GetAtt CloudWatchRole.Arn
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/api-gateway/access-logs/SGWS-Model-Endpoint-${Environment}-Api"
+      RetentionInDays: 60
+      KmsKeyId: !GetAtt AccessLogsEncryptionkey.Arn
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    # checkov:skip=CKV_AWS_73:Caching not required
+    # checkov:skip=CKV_AWS_120:X-Ray tracing not required
+    DependsOn: AccountLoggingSettings
+    Properties:
+      AccessLogSetting:
+       DestinationArn: !Select [0, !Split [':*', !GetAtt AccessLogGroup.Arn ]]
+       Format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLatency":$context.responseLatency}'
+      Name: !Sub "SGWS-Model-Endpoint-${Environment}-Api"
+      StageName: 'api'
+      OpenApiVersion: 3.0.1
+      EndpointConfiguration:
+        Type: 'PRIVATE'
+        VPCEndpointIds:
+          - !Ref VpcEndpointId
+      DefinitionBody: # Pull in an OpenApi definition from S3
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: !Sub 's3://${ArtifactsBucket}/templates/api/api-spec.yaml'
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    DependsOn:
+      - ApiGatewayApiapiStage
+    Properties:
+      Description: !Sub "API Gateway API Key for ${Environment}"
+      Enabled: true
+  UsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    DependsOn:
+      - ApiGatewayApiapiStage
+    Properties:
+      ApiStages:
+        - ApiId: !Ref ApiGatewayApi
+          Stage: 'api'
+      Description: !Sub "${Environment} API usage plan"
+      UsagePlanName: !Sub "SGWS-Model-Endpoint-${Environment}-UsagePlan"
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan

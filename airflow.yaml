@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of Airflow environment
+Parameters:
+  Environment:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  MaxWorkerNodes:
+    Description: The maximum number of workers that can run in the environment
+    Type: Number
+    Default: 3
+  MinWorkerNodes:
+    Description: The minimum number of workers that can run in the environment
+    Type: Number
+    Default: 1
+  DagProcessingLogsLevel:
+    Description: Log level for DagProcessing
+    Type: String
+    Default: INFO
+  SchedulerLogsLevel:
+    Description: Log level for SchedulerLogs
+    Type: String
+    Default: INFO
+  TaskLogsLevel:
+    Description: Log level for TaskLogs
+    Type: String
+    Default: INFO
+  WorkerLogsLevel:
+    Description: Log level for WorkerLogs
+    Type: String
+    Default: INFO
+  WebserverLogsLevel:
+    Description: Log level for WebserverLogs
+    Type: String
+    Default: INFO
+  DagS3Path:
+    Description: The relative path to the DAGs folder on your Amazon S3 bucket.
+    Type: String
+  WeeklyMaintenanceWindow:
+    Description: |
+      The day and time of the week to start weekly maintenance updates of your environment
+      in the following format: DAY:HH:MM
+    Type: String
+  PrivateSubnet1Id:
+    Description: The ID of the first private subnet
+    Type: String
+  PrivateSubnet2Id:
+    Description: The ID of the second private subnet
+    Type: String
+  AirflowVersion:
+    Description: Version of Airflow environment to be used
+    Type: String
+    Default: 2.4.3
+  MwaaExecutionRoleArn:
+    Description: ARN of MWAA environment execution role
+    Type: String
+  EnvironmentBucketArn:
+    Description: ARN of MWAA environment bucket
+    Type: String
+  SecurityGroupId:
+    Description: ID of security group created for Airflow
+    Type: String
+  EnvironmentClass:
+    Description: The environment class type
+    Type: String
+  Schedulers:
+    Description: The number of schedulers that you want to run in your environment
+    Type: String
+  KmsKey:
+    Description: KMS key used to encrypt and decrypt data in Airflow environment
+    Type: String
+
+Resources:
+  MwaaEnvironment:
+    Type: AWS::MWAA::Environment
+    Properties:
+      AirflowConfigurationOptions:
+        webserver.default_ui_timezone: "US/Eastern"
+        secrets.backend: "airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend"
+        secrets.backend_kwargs: '{"connections_prefix" : "mlops/airflow/connections", "variables_prefix" : "mlops/airflow/variables", "full_url_mode": false}'
+        # celery.worker_autoscale: "1,1"
+      AirflowVersion: !Ref AirflowVersion
+      Name: !Sub "${Environment}-Mwaa-environment"
+      EnvironmentClass: !Ref EnvironmentClass
+      SourceBucketArn: !Ref EnvironmentBucketArn
+      ExecutionRoleArn: !Ref MwaaExecutionRoleArn
+      DagS3Path: !Ref DagS3Path
+      WeeklyMaintenanceWindowStart: !Ref WeeklyMaintenanceWindow
+      Schedulers: !Ref Schedulers
+      KmsKey: !Ref KmsKey
+      NetworkConfiguration:
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      WebserverAccessMode: PRIVATE_ONLY
+      MaxWorkers: !Ref MaxWorkerNodes
+      MinWorkers: !Ref MinWorkerNodes
+      LoggingConfiguration:
+        DagProcessingLogs:
+          LogLevel: !Ref DagProcessingLogsLevel
+          Enabled: true
+        SchedulerLogs:
+          LogLevel: !Ref SchedulerLogsLevel
+          Enabled: true
+        TaskLogs:
+          LogLevel: !Ref TaskLogsLevel
+          Enabled: true
+        WorkerLogs:
+          LogLevel: !Ref WorkerLogsLevel
+          Enabled: true
+        WebserverLogs:
+          LogLevel: !Ref WebserverLogsLevel
+          Enabled: true
+
+Outputs:
+  MwaaApacheAirflowUI:
+    Description: MWAA Environment
+    Value: !Sub  "https://${MwaaEnvironment.WebserverUrl}"

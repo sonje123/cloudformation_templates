@@ -1,0 +1,759 @@
+  AWSTemplateFormatVersion: "2010-09-09"
+  Description: Create resources required to support deployment of Airflow
+  Parameters:
+    Environment:
+      Description: An environment name that is prefixed to resource names
+      Type: String
+    WebUIAllowedCidr:
+      Description: CIDR IP range from which Airflow https port for web UI can be accessed
+      Type: String
+    VpcId:
+      Description: VPC in which Airflow and security group would be created
+      Type: String
+    AccessLogsBucket:
+      Description: Name of bucket where S3 access logs need to be stored
+      Type: String
+    RedshiftRoleARN:
+      Description: ARN of role used by Redshift cluster
+      Type: String
+     
+  Resources:
+    SecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W5
+              reason: |
+                0.0.0.0/0 required for egress as per documentation
+                https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+            - id: W40
+              reason: |
+                IP protocol of -1 (all) is required as per documentation
+                https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+            - id: W42
+              reason: |
+                IP protocol of -1 (all) is required as per documentation
+                https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+      Properties:
+        GroupDescription: !Sub "Security group with for Amazon MWAA ${Environment} environment"
+        VpcId: !Ref VpcId
+        SecurityGroupEgress:
+          - Description: Allow all outbound traffic as per documentation https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+            IpProtocol: "-1"
+            CidrIp: "0.0.0.0/0"
+
+    SecurityGroupIngress1:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        GroupId: !Ref SecurityGroup
+        Description: Allow traffic to Web UI from specific IP ranges
+        IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: !Ref WebUIAllowedCidr
+
+    SecurityGroupIngress2:
+      Type: AWS::EC2::SecurityGroupIngress
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W40
+              reason: |
+                IP protocol of -1 (all) is required as per documentation
+                https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+      Properties:
+        GroupId: !Ref SecurityGroup
+        Description: Allow all inbound traffic with self rule as per documentation https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+        IpProtocol: "-1"
+        SourceSecurityGroupId: !Ref SecurityGroup
+
+  #  SecurityGroupSecurityGroupEgress:
+  #    Type: AWS::EC2::SecurityGroupEgress
+
+  #    Properties:
+  #      GroupId: !Ref SecurityGroup
+  #      Description: Allow all outbound traffic as per documentation https://docs.aws.amazon.com/mwaa/latest/userguide/networking-about.html
+  #      IpProtocol: "-1"
+  #      CidrIp: "0.0.0.0/0"
+
+    EnvironmentBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        # AccessControl: Private
+        LoggingConfiguration:
+          DestinationBucketName: !Ref AccessLogsBucket
+          LogFilePrefix: accesslogs/EnvironmentBucket
+        VersioningConfiguration:
+          Status: Enabled
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                KMSMasterKeyID:
+                  !GetAtt EnvironmentBucketEncryptionKey.Arn
+                SSEAlgorithm: aws:kms
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+      UpdateReplacePolicy: Retain
+      DeletionPolicy: Retain
+
+    EnvironmentBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: EnvironmentBucket
+        PolicyDocument:
+          Statement:
+            - Action: s3:*
+              Condition:
+                Bool:
+                  aws:SecureTransport: "false"
+              Effect: Deny
+              Principal:
+                AWS: "*"
+              Resource:
+                - !GetAtt EnvironmentBucket.Arn
+                - !Join [ '', [ !GetAtt EnvironmentBucket.Arn, '/*' ] ]
+            - Action:
+                - s3:Get*
+                - s3:Put*
+                - s3:DeleteObject
+              Effect: Allow
+              Principal:
+                AWS: !Ref RedshiftRoleARN
+              Resource:
+                - !GetAtt EnvironmentBucket.Arn
+                - !Join [ '', [ !GetAtt EnvironmentBucket.Arn, '/*' ] ]
+          Version: "2012-10-17"
+
+    EnvironmentBucketEncryptionKey:
+      Type: "AWS::KMS::Key"
+      Properties:
+        EnableKeyRotation: true
+        KeyPolicy:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+              Action:
+                - kms:Encrypt*
+                - kms:Decrypt*
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:Describe*
+              Resource: "*"
+              Condition:
+                ArnLike:
+                  kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:*:*'
+            - Effect: Allow
+              Principal:
+               AWS: !Ref RedshiftRoleARN
+              Action:
+               - kms:Encrypt*
+               - kms:Decrypt*
+               - kms:ReEncrypt*
+               - kms:GenerateDataKey*
+               - kms:Describe*
+              Resource: "*"
+            - Effect: Allow
+              Principal:
+                AWS: !GetAtt SagemakerExecutionRole.Arn
+              Action:
+                 - kms:Encrypt*
+                 - kms:Decrypt*
+                 - kms:ReEncrypt*
+                 - kms:GenerateDataKey*
+                 - kms:Describe*
+              Resource: "*"
+            - Effect: Allow
+              Action: kms:*
+              Principal:
+                AWS:
+                  Fn::Join:
+                    - ""
+                    - - "arn:"
+                      - Ref: AWS::Partition
+                      - ":iam::"
+                      - Ref: AWS::AccountId
+                      - :root
+              Resource: "*"
+          Version: "2012-10-17"
+
+# Todo Remove this bucket
+    AirflowFBTBucket:
+      Type: AWS::S3::Bucket
+      # checkov:skip=CKV_AWS_18:Logging not required for intermediate file bucket
+      # checkov:skip=CKV_AWS_21:Versioning not required for intermediate file bucket
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W35
+              reason: Logging not required for intermediate file bucket
+      Properties:
+        BucketName: !Sub sgws-aip-fbt-airflow-${Environment}
+        # AccessControl: Private
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                KMSMasterKeyID:
+                  !GetAtt EnvironmentBucketEncryptionKey.Arn
+                SSEAlgorithm: aws:kms
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+      UpdateReplacePolicy: Retain
+      DeletionPolicy: Retain
+
+    AirflowFBTBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: AirflowFBTBucket
+        PolicyDocument:
+          Statement:
+            - Action: s3:*
+              Condition:
+                Bool:
+                  aws:SecureTransport: "false"
+              Effect: Deny
+              Principal:
+                AWS: "*"
+              Resource:
+                - !GetAtt AirflowFBTBucket.Arn
+                - !Join [ '', [ !GetAtt AirflowFBTBucket.Arn, '/*' ] ]
+          Version: "2012-10-17"
+
+    SagemakerExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - sagemaker.amazonaws.com
+              Action:
+              - "sts:AssumeRole"
+
+    SagemakerExecutionPolicy:
+      # checkov:skip=CKV_AWS_108: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html policy references
+      # checkov:skip=CKV_AWS_109: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html policy reference
+      # checkov:skip=CKV_AWS_111: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html policy reference
+      Type: AWS::IAM::Policy
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W12
+              reason: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html policy reference
+      Properties:
+        PolicyName: SagemakerExecutionPolicy
+        Roles:
+          - !Ref SagemakerExecutionRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - cloudwatch:PutMetricData
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:CreateLogGroup
+            - logs:DescribeLogStreams
+            - ecr:GetAuthorizationToken
+            - ecr:BatchCheckLayerAvailability
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchGetImage
+            - ec2:CreateNetworkInterface
+            - ec2:CreateNetworkInterfacePermission
+            - ec2:DeleteNetworkInterface
+            - ec2:DeleteNetworkInterfacePermission
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DescribeVpcs
+            - ec2:DescribeDhcpOptions
+            - ec2:DescribeSubnets
+            - ec2:DescribeSecurityGroups
+            - kms:Decrypt
+            - kms:Encrypt
+            - kms:CreateGrant
+            Resource: "*"
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:GetResourcePolicy
+            - secretsmanager:DescribeSecret
+            - secretsmanager:ListSecretVersionIds
+            Resource:
+            - arn:aws:secretsmanager:*:*:secret:airflow/connections/*
+            - arn:aws:secretsmanager:*:*:secret:mlops/*
+          - Effect: Allow
+            Action:
+            - ssm:GetParameter*
+            Resource: arn:aws:ssm:*:*:parameter/mlops/*
+
+          - Effect: Allow
+            Action:
+              - "s3:GetObject*"
+              - "s3:GetBucket*"
+              - "s3:PutObject*"
+              - "s3:List*"
+              - "s3:DeleteObject*"
+            Resource:
+            - !Sub "${EnvironmentBucket.Arn}"
+            - !Sub "${EnvironmentBucket.Arn}/*"
+            - !Sub "${AirflowFBTBucket.Arn}"
+            - !Sub "${AirflowFBTBucket.Arn}/*"
+            - "arn:aws:s3:::sgws-*"
+            - "arn:aws:s3:::sgws-*/*"
+            - "arn:aws:s3:::mlops-*/*"
+            - "arn:aws:s3:::mlops-*"
+            - "arn:aws:s3:::airflow-*/*"
+            - "arn:aws:s3:::airflow-*"         
+
+    SagemakerNotebookExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - sagemaker.amazonaws.com
+              Action:
+              - "sts:AssumeRole"
+
+    SagemakerNotebookExecutionPolicy:
+      Type: AWS::IAM::Policy
+      # checkov:skip=CKV_AWS_108: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createnotebookinstance-perms policy reference
+      # checkov:skip=CKV_AWS_109: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createnotebookinstance-perms policy reference
+      # checkov:skip=CKV_AWS_111: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createnotebookinstance-perms policy reference
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W12
+              reason: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createnotebookinstance-perms policy reference
+            - id: F4
+              reason: https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createnotebookinstance-perms policy reference
+            - id: F39
+              reason: Action is restricted using conditions block
+      Properties:
+        PolicyName: SagemakerNotebookExecutionPolicy
+        Roles:
+          - !Ref SagemakerNotebookExecutionRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - sagemaker:*
+            - ecr:GetAuthorizationToken
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchGetImage
+            - ecr:BatchCheckLayerAvailability
+            - ecr:SetRepositoryPolicy
+            - ecr:CompleteLayerUpload
+            - ecr:BatchDeleteImage
+            - ecr:UploadLayerPart
+            - ecr:DeleteRepositoryPolicy
+            - ecr:InitiateLayerUpload
+            - ecr:DeleteRepository
+            - ecr:PutImage
+            - ecr:CreateRepository
+            - cloudwatch:PutMetricData
+            - cloudwatch:GetMetricData
+            - cloudwatch:GetMetricStatistics
+            - cloudwatch:ListMetrics
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:DescribeLogStreams
+            - logs:PutLogEvents
+            - logs:GetLogEvents
+            - s3:CreateBucket
+            - s3:ListBucket
+            - s3:GetBucketLocation
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - ec2:CreateVpcEndpoint
+            - ec2:DescribeRouteTables
+            - elasticfilesystem:DescribeMountTargets
+            - ssm:*
+            - sns:*
+            - kms:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:GetResourcePolicy
+            - secretsmanager:DescribeSecret
+            - secretsmanager:ListSecretVersionIds
+            Resource:
+            - arn:aws:secretsmanager:*:*:secret:airflow/connections/*
+            - arn:aws:secretsmanager:*:*:secret:mlops/*
+          - Effect: Allow
+            Action:
+            - codecommit:GitPull
+            - codecommit:GitPush
+            Resource:
+            - arn:aws:codecommit:*:*:*
+          - Effect: Allow
+            Action:
+            - iam:PassRole
+            Resource: "*"
+            Condition:
+              StringEquals:
+                iam:PassedToService: sagemaker.amazonaws.com
+
+
+    MwaaExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - airflow-env.amazonaws.com
+                  - airflow.amazonaws.com
+              Action:
+              - "sts:AssumeRole"
+
+    MwaaExecutionPolicy:
+      Type: AWS::IAM::Policy
+      # checkov:skip=CKV_AWS_111: All policies have constraints
+      # checkov:skip=CKV_AWS_108: s3:GetObject is required
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: W12
+              reason: Actions doesn't support specific resource block
+            - id: W76
+              reason: Use single policy to simplify template file
+      Properties:
+        PolicyName: MwaaExecutionPolicy
+        Roles:
+          - !Ref MwaaExecutionRole
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - sagemaker:CreateProcessingJob
+                - sagemaker:StopProcessingJob
+                - sagemaker:CreateTrainingJob
+                - sagemaker:UpdateTrainingJob
+                - sagemaker:StopTrainingJob
+                - sagemaker:CreateTransformJob
+                - sagemaker:StopTransformJob
+                - sagemaker:Describe*
+                - sagemaker:List*
+                - sagemaker:CreateModel
+                - sagemaker:DescribeModel
+                - sagemaker:DeleteModel
+                - sagemaker:CreateModelPackage*
+                - sagemaker:DeleteModelPackage*
+                - sagemaker:UpdateModelPackage    
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - iam:PassRole
+              Resource: arn:aws:iam::*:role/*
+              Condition:
+                StringEquals:
+                  iam:PassedToService: sagemaker.amazonaws.com
+            - Effect: Allow
+              Action: airflow:PublishMetrics
+              Resource:
+                - !Sub "arn:aws:airflow:${AWS::Region}:${AWS::AccountId}:environment/${Environment}-Mwaa-environment"
+            - Effect: Allow
+              Action: s3:GetAccountPublicAccessBlock
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - "s3:GetObject*"
+                - "s3:GetBucket*"
+                - "s3:PutObject*"
+                - "s3:List*"
+                - "s3:DeleteObject*"
+              Resource:
+              - !Sub "${EnvironmentBucket.Arn}"
+              - !Sub "${EnvironmentBucket.Arn}/*"
+              - !Sub "${AirflowFBTBucket.Arn}"
+              - !Sub "${AirflowFBTBucket.Arn}/*"
+              - "arn:aws:s3:::sgws-*"
+              - "arn:aws:s3:::sgws-*/*"
+              - "arn:aws:s3:::mlops-*/*"
+              - "arn:aws:s3:::mlops-*"
+              - "arn:aws:s3:::airflow-*/*"
+              - "arn:aws:s3:::airflow-*"         
+
+            - Effect: Allow
+              Action:
+                - "logs:DescribeLog*"
+                - "logs:Get*"
+              Resource: "*"
+
+            - Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+                - logs:GetLogEvents
+                - logs:GetLogRecord
+                - logs:GetLogGroupFields
+                - logs:GetQueryResults
+                - logs:DescribeLogGroups
+              Resource:
+                - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:airflow-${Environment}-Mwaa-environment-*"
+            - Effect: Allow
+              Action: cloudwatch:PutMetricData
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - sqs:ChangeMessageVisibility
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:GetQueueUrl
+                - sqs:ReceiveMessage
+                - sqs:SendMessage
+              Resource:
+                - !Sub "arn:aws:sqs:${AWS::Region}:*:airflow-celery-*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey*
+                - kms:Encrypt
+              Resource: !GetAtt EnvironmentBucketEncryptionKey.Arn
+              Condition:
+                StringLike:
+                  "kms:ViaService":
+                    - !Sub "sqs.${AWS::Region}.amazonaws.com"
+                    - !Sub "s3.${AWS::Region}.amazonaws.com"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey*
+              Resource: '*'
+              Condition:
+                ForAnyValue:StringEquals:
+                  kms:ResourceAliases: !Sub alias/sns-kms-key-airflow-${Environment}
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:sgws-airflow-error-alerts-${Environment}"
+            - Effect: Allow
+              Action:
+              - secretsmanager:GetSecretValue  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+              - secretsmanager:GetResourcePolicy  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+              - secretsmanager:DescribeSecret  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+              - secretsmanager:ListSecretVersionIds # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+              Resource: 
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:airflow/connections/*"
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:airflow/variables/*"
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mlops/*"
+
+            - Effect: Allow
+              Action:
+              - ssm:GetParameter*
+              Resource: "arn:aws:ssm:*:*:parameter/mlops/*"
+
+    AirflowRedshiftSecret:
+      Type: 'AWS::SecretsManager::Secret'
+      Properties:
+        Name: !Sub "mlops/airflow/connections/sgws-common-redshift-airflow-secret-${Environment}"
+        Description: Credentials for the Redshift database
+        KmsKeyId: !Ref SecretsManagerKMSKey
+
+    AirflowRedshiftSecretPolicy:
+      Type: AWS::SecretsManager::ResourcePolicy
+      Properties:
+        SecretId: !Ref AirflowRedshiftSecret
+        ResourcePolicy:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            - secretsmanager:GetResourcePolicy  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            - secretsmanager:DescribeSecret
+            - secretsmanager:ListSecretVersionIds  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            Principal:
+              AWS: "*"
+            Condition:
+              StringLike:
+                aws:PrincipalArn:
+                - !GetAtt MwaaExecutionRole.Arn
+                - !Sub "arn:aws:airflow:${AWS::Region}:${AWS::AccountId}:environment/${Environment}-Mwaa-environment"
+            Resource: !Ref AirflowRedshiftSecret
+
+    AirflowVariablesSecret:
+      Type: 'AWS::SecretsManager::Secret'
+      Properties:
+        Name: !Sub "mlops/airflow/variables/sgws-common-airflow-variables-${Environment}"
+        Description: Environment variables for airflow
+        KmsKeyId: !Ref SecretsManagerKMSKey
+
+    AirflowVariablesSecretPolicy:
+      Type: AWS::SecretsManager::ResourcePolicy
+      Properties:
+        SecretId: !Ref AirflowVariablesSecret
+        ResourcePolicy:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            - secretsmanager:GetResourcePolicy  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            - secretsmanager:DescribeSecret
+            - secretsmanager:ListSecretVersionIds  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+            Principal:
+              AWS: "*"
+            Condition:
+              StringLike:
+                aws:PrincipalArn:
+                - !GetAtt MwaaExecutionRole.Arn
+                - !Sub "arn:aws:airflow:${AWS::Region}:${AWS::AccountId}:environment/${Environment}-Mwaa-environment"
+            Resource: !Ref AirflowVariablesSecret
+
+    SecretsManagerKMSKey:
+      Type: "AWS::KMS::Key"
+      # checkov:skip=CKV_AWS_33:Condition block is used to restrict access for * principal
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: F76
+              reason: Condition block is used to restrict access for * principal
+      Properties:
+        EnableKeyRotation: true
+        KeyPolicy:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
+              Action:
+                - kms:Encrypt*
+                - kms:Decrypt*
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:Describe*
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:CallerAccount: !Sub '${AWS::AccountId}'
+            - Effect: Allow
+              Principal:
+                AWS: '*'
+              Action:
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+                - kms:CreateGrant
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:CallerAccount: !Sub '${AWS::AccountId}'
+                  kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+            - Action: kms:*
+              Effect: Allow
+              Principal:
+                AWS:
+                  Fn::Join:
+                    - ""
+                    - - "arn:"
+                      - Ref: AWS::Partition
+                      - ":iam::"
+                      - Ref: AWS::AccountId
+                      - :root
+              Resource: "*"
+          Version: "2012-10-17"
+
+    SNSKMSKeyAirflowAlias:
+      Type: 'AWS::KMS::Alias'
+      Properties:
+        AliasName: !Sub alias/sns-kms-key-airflow-${Environment}
+        TargetKeyId: !Ref SNSKMSKeyAirflow
+
+    SNSKMSKeyAirflow:
+      Type: "AWS::KMS::Key"
+      # checkov:skip=CKV_AWS_33:Condition block is used to restrict access for * principal
+      Metadata:
+        cfn_nag:
+          rules_to_suppress:
+            - id: F76
+              reason: Condition block is used to restrict access for * principal
+      Properties:
+        EnableKeyRotation: true
+        KeyPolicy:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: "cloudwatch.amazonaws.com"
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: "*"
+            - Effect: Allow
+              Action: kms:*
+              Principal:
+                AWS:
+                  Fn::Join:
+                    - ""
+                    - - "arn:"
+                      - Ref: AWS::Partition
+                      - ":iam::"
+                      - Ref: AWS::AccountId
+                      - :root
+              Resource: "*"
+          Version: "2012-10-17"
+
+    AirflowEmailAlertsSNSTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: !Sub sgws-airflow-error-alerts-${Environment}
+        KmsMasterKeyId : !Ref SNSKMSKeyAirflow
+
+    AirflowEmailAlertsSNSTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        Topics:
+          - !Ref AirflowEmailAlertsSNSTopic
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - cloudwatch.amazonaws.com
+              Action:
+                - sns:Publish
+              Resource: !Ref AirflowEmailAlertsSNSTopic
+
+  Outputs:
+    MwaaExecutionRoleArn:
+      Description: ARN of MWAA environment execution role
+      Value: !GetAtt MwaaExecutionRole.Arn
+    EnvironmentBucketName:
+      Description: Name of MWAA environment bucket
+      Value: !Ref EnvironmentBucket
+    EnvironmentBucketArn:
+      Description: ARN of MWAA environment bucket
+      Value: !GetAtt EnvironmentBucket.Arn
+    SecurityGroupId:
+      Description: ID of security group created for Airflow
+      Value: !Ref SecurityGroup
+    KmsKeyArn:
+      Description: ARN of KMS Key used to encrypt S3 bucket (same bucket needs to be used by Airflow)
+      Value: !GetAtt EnvironmentBucketEncryptionKey.Arn
+    AirflowAlertsSNSTopicARN:    
+      Value: !Ref AirflowEmailAlertsSNSTopic
+      Description: ARN of the SNS Topic used for Email Alerts for Airflow DAG Errors
+      

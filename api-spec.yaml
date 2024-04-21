@@ -1,0 +1,276 @@
+openapi: "3.0.1"
+info:
+  title:
+    Fn::Sub: "SGWS-Model-Endpoint-${Environment}-Api"
+  description: "This API definition describes the model inference APIs which will be\
+    \ used to query output of trained models"
+  version: "0.2"
+paths:
+  /fbt/{site}/{itemNo}/{premise}:
+    get:
+      operationId: "fbtQuery"
+      parameters:
+      - name: "premise"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      - name: "site"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      - name: "itemNo"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      responses:
+        "404":
+          description: "404 response"
+          content: {}
+        "405":
+          description: "405 response"
+          content: {}
+        "200":
+          description: "200 response"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArrayOfFrequentlyBoughtTogetherItem"
+        "400":
+          description: "400 response"
+          content: {}
+      security:
+      - api_key: []
+      x-amazon-apigateway-integration:
+        httpMethod: "POST"
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FbtLambdaFunctionArn}/invocations"
+        credentials:
+          Fn::Sub: "${ApiGatewayInvokeRole.Arn}"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+  /cly/{customerNo}/{siteNo}:
+    get:
+      operationId: "clyQuery"
+      parameters:
+      - name: "customerNo"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      - name: "siteNo"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      responses:
+        "404":
+          description: "404 response"
+          content: {}
+        "405":
+          description: "405 response"
+          content: {}
+        "200":
+          description: "200 response"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArrayOfCustomersLikeYouBoughtItems"
+        "400":
+          description: "400 response"
+          content: {}
+      security:
+      - api_key: []
+      x-amazon-apigateway-integration:
+        httpMethod: "POST"
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ClyLambdaFunctionArn}/invocations"
+        credentials:
+          Fn::Sub: "${ApiGatewayInvokeRole.Arn}"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+  /r2r/{customer}/{site}:
+    get:
+      operationId: "r2rQuery"
+      parameters:
+      - name: "customer"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      - name: "site"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      responses:
+        "404":
+          description: "404 response"
+          content: {}
+        "405":
+          description: "405 response"
+          content: {}
+        "200":
+          description: "200 response"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArrayOfReadyToReorderItems"
+        "400":
+          description: "400 response"
+          content: {}
+      security:
+      - api_key: []
+      x-amazon-apigateway-integration:
+        httpMethod: "POST"
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${R2rLambdaFunctionArn}/invocations"
+        credentials:
+          Fn::Sub: "${ApiGatewayInvokeRole.Arn}"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+  /ppl/{customerNo}/{siteNo}:
+    get:
+      operationId: "pplQuery"
+      parameters:
+      - name: "customerNo"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      - name: "siteNo"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+      responses:
+        "404":
+          description: "404 response"
+          content: {}
+        "405":
+          description: "405 response"
+          content: {}
+        "200":
+          description: "200 response"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArrayOfPreviouslyPurchasedListItems"
+        "400":
+          description: "400 response"
+          content: {}
+      security:
+      - api_key: []
+      x-amazon-apigateway-integration:
+        httpMethod: "POST"
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PplLambdaFunctionArn}/invocations"
+        credentials:
+          Fn::Sub: "${ApiGatewayInvokeRole.Arn}"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+security:
+- api_key: []
+components:
+  schemas:
+    ArrayOfFrequentlyBoughtTogetherItem:
+      type: "array"
+      maxItems: 20
+      items:
+        $ref: "#/components/schemas/FrequentlyBoughtTogetherItem"
+    FrequentlyBoughtTogetherItem:
+      type: "object"
+      properties:
+        site:
+          type: "integer"
+          format: "int32"
+        itemNo:
+          type: "integer"
+          format: "int32"
+        itemNoSim:
+          type: "integer"
+          format: "int32"
+        rank:
+          type: "integer"
+          format: "int32"
+    ArrayOfCustomersLikeYouBoughtItems:
+      type: "array"
+      maxItems: 200
+      items:
+        $ref: "#/components/schemas/CustomersLikeYouItem"
+    CustomersLikeYouItem:
+      type: "object"
+      properties:
+        itemNo:
+          type: "integer"
+          format: "int32"
+        score:
+          type: "integer"
+          format: "int32"
+    ArrayOfReadyToReorderItems:
+      type: "array"
+      maxItems: 200
+      items:
+        $ref: "#/components/schemas/ReadyToReorderItem"
+    ReadyToReorderItem:
+      type: "object"
+      properties:
+        itemNo:
+          type: "integer"
+          format: "int32"
+        score:
+          type: "integer"
+          format: "int32"
+    ArrayOfPreviouslyPurchasedListItems:
+      type: "array"
+      maxItems: 200
+      items:
+        $ref: "#/components/schemas/PreviouslyPurchasedListItem"
+    PreviouslyPurchasedListItem:
+      type: "object"
+      properties:
+        itemNo:
+          type: "integer"
+          format: "int32"
+        rank:
+          type: "integer"
+          format: "int32"
+  securitySchemes:
+    #checkov:skip=CKV_OPENAPI_20: API uses https. Server key with https URL cannot be added so check is skipped.
+    api_key:
+      type: "apiKey"
+      name: "x-api-key"
+      in: "header"
+x-amazon-apigateway-policy:
+  Version: "2012-10-17"
+  Statement:
+  - Effect: "Deny"
+    Principal: "*"
+    Action: "execute-api:Invoke"
+    Resource: "*"
+    Condition:
+      StringNotEquals:
+        aws:sourceVpce:
+          Fn::Sub: "${VpcEndpointId}"
+  - Effect: "Allow"
+    Principal: "*"
+    Action: "execute-api:Invoke"
+    Resource: "*"

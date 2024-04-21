@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of supporting resources required for Lambda Function
+Parameters:
+  Environment:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  VpcId:
+    Description: VPC in which Lambda would be created
+    Type: String
+  AccessLogsBucket:
+    Description: Name of bucket where S3 access logs need to be stored
+    Type: String
+Resources:
+  LambdaArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: accesslogs/LambdaArtifactBucket
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID:
+                !GetAtt LambdaArtifactBucketEncryptionKey.Arn
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+
+  LambdaArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: LambdaArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Action: s3:*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Resource:
+              - !GetAtt LambdaArtifactBucket.Arn
+              - !Join [ '', [ !GetAtt LambdaArtifactBucket.Arn, '/*' ] ]
+        Version: "2012-10-17"
+
+  LambdaArtifactBucketEncryptionKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:*:*'
+          - Action: kms:*
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  - - "arn:"
+                    - Ref: AWS::Partition
+                    - ":iam::"
+                    - Ref: AWS::AccountId
+                    - :root
+            Resource: "*"
+        Version: "2012-10-17"
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: |
+              0.0.0.0/0 required for redshift and ssl port
+    Properties:
+      GroupDescription: !Sub "Security group with for all Lambda ${Environment}"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic for port 5439
+          IpProtocol: tcp
+          FromPort: 5439
+          ToPort: 5439
+          CidrIp: "0.0.0.0/0"
+        - Description: Allow all outbound traffic for port 443
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+
+  RedshiftSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "mlops/lambda/redshift/${Environment}"
+      Description: Credentials for the Redshift database
+      KmsKeyId: !Ref SecretsManagerKMSKey
+
+  SecretsManagerKMSKey:
+    Type: "AWS::KMS::Key"
+    # checkov:skip=CKV_AWS_33:Condition block is used to restrict access for * principal
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F76
+            reason: Condition block is used to restrict access for * principal
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Sub '${AWS::AccountId}'
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Sub '${AWS::AccountId}'
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+          - Action: kms:*
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  - - "arn:"
+                    - Ref: AWS::Partition
+                    - ":iam::"
+                    - Ref: AWS::AccountId
+                    - :root
+            Resource: "*"
+        Version: "2012-10-17"
+
+  SNSKMSKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub alias/sns-kms-key-lambda-${Environment}
+      TargetKeyId: !Ref SNSKMSKey
+
+  SNSKMSKey:
+    Type: "AWS::KMS::Key"
+    # checkov:skip=CKV_AWS_33:Condition block is used to restrict access for * principal
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F76
+            reason: Condition block is used to restrict access for * principal
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "cloudwatch.amazonaws.com"
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - Effect: Allow
+            Action: kms:*
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  - - "arn:"
+                    - Ref: AWS::Partition
+                    - ":iam::"
+                    - Ref: AWS::AccountId
+                    - :root
+            Resource: "*"
+        Version: "2012-10-17"
+
+  EmailAlertsSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub sgws-lambda-error-alerts-${Environment}
+      KmsMasterKeyId : !Ref SNSKMSKey
+
+  EmailAlertsSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref EmailAlertsSNSTopic
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudwatch.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref EmailAlertsSNSTopic
+
+Outputs:
+  LambdaArtifactBucketName:
+    Description: Name of bucket where Lambda function artifacts would be stored
+    Value: !Ref LambdaArtifactBucket
+  KmsKeyArn:
+    Description: ARN of KMS Key used to encrypt Lambda Artifacts bucket
+    Value: !GetAtt LambdaArtifactBucketEncryptionKey.Arn
+  SecretARN:
+    Description: The ARN of the secret
+    Value: !Ref RedshiftSecret
+  SecretsManagerKMSKeyArn:
+    Description: ARN of KMS Key used to encrypt secrets
+    Value: !GetAtt SecretsManagerKMSKey.Arn
+  AlertsSNSTopicARN:
+    Value: !Ref EmailAlertsSNSTopic
+    Description: ARN of the SNS Topic used for Email Alerts
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+    Description: Security group ID

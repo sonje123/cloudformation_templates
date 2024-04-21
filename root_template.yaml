@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of consumption API and supporting resources
+Parameters:
+  Environment:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  VpcEndpointId:
+    Description: ID of VPC endpoint used for API Gateway
+    Type: String
+  VpcId:
+    Description: VPC in which Lambda would be created
+    Type: String
+  PrivateSubnet1Id:
+    Description: The ID of the first private subnet
+    Type: String
+  PrivateSubnet2Id:
+    Description: The ID of the second private subnet
+    Type: String
+  ArtifactsBucket:
+    Description: Name of the artifacts bucket where nested templates are stored
+    Type: String
+  AccessLogsBucket:
+    Description: Name of bucket where S3 access logs need to be stored
+    Type: String
+  ProvisionedConcurrentExecutions:
+    Description: Provisioned concurrency for Lambda
+    Type: String
+
+Resources:
+  CommonResourcesStack:
+    # This stack creates common resources for all Lambda functions
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/common_resources.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        VpcId: !Ref VpcId
+        AccessLogsBucket: !Ref AccessLogsBucket
+  FbtLambdaStack:
+    # This stack creates Lambda function for FBT
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/lambda.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        PrivateSubnet1Id: !Ref PrivateSubnet1Id
+        PrivateSubnet2Id: !Ref PrivateSubnet2Id
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrentExecutions
+        SecurityGroup: !GetAtt CommonResourcesStack.Outputs.SecurityGroupId
+        RedshiftSecret: !GetAtt CommonResourcesStack.Outputs.SecretARN
+        EmailAlertsSNSTopic: !GetAtt CommonResourcesStack.Outputs.AlertsSNSTopicARN
+        ModelPrefix: fbt
+  ClyLambdaStack:
+    # This stack creates Lambda function for CLY
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/lambda.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        PrivateSubnet1Id: !Ref PrivateSubnet1Id
+        PrivateSubnet2Id: !Ref PrivateSubnet2Id
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrentExecutions
+        SecurityGroup: !GetAtt CommonResourcesStack.Outputs.SecurityGroupId
+        RedshiftSecret: !GetAtt CommonResourcesStack.Outputs.SecretARN
+        EmailAlertsSNSTopic: !GetAtt CommonResourcesStack.Outputs.AlertsSNSTopicARN
+        ModelPrefix: cly
+  R2rLambdaStack:
+    # This stack creates Lambda function for R2R
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/lambda.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        PrivateSubnet1Id: !Ref PrivateSubnet1Id
+        PrivateSubnet2Id: !Ref PrivateSubnet2Id
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrentExecutions
+        SecurityGroup: !GetAtt CommonResourcesStack.Outputs.SecurityGroupId
+        RedshiftSecret: !GetAtt CommonResourcesStack.Outputs.SecretARN
+        EmailAlertsSNSTopic: !GetAtt CommonResourcesStack.Outputs.AlertsSNSTopicARN
+        ModelPrefix: r2r
+  PplLambdaStack:
+    # This stack creates Lambda function for PPL
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/lambda.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        PrivateSubnet1Id: !Ref PrivateSubnet1Id
+        PrivateSubnet2Id: !Ref PrivateSubnet2Id
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrentExecutions
+        SecurityGroup: !GetAtt CommonResourcesStack.Outputs.SecurityGroupId
+        RedshiftSecret: !GetAtt CommonResourcesStack.Outputs.SecretARN
+        EmailAlertsSNSTopic: !GetAtt CommonResourcesStack.Outputs.AlertsSNSTopicARN
+        ModelPrefix: ppl
+
+  RedshiftSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !GetAtt CommonResourcesStack.Outputs.SecretARN
+      ResourcePolicy:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - secretsmanager:GetSecretValue  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+          - secretsmanager:GetResourcePolicy  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+          - secretsmanager:DescribeSecret
+          - secretsmanager:ListSecretVersionIds  # checkov:skip=CKV_SECRET_6:False Alarm, only a policy, no secret is hardcoded
+          Principal:
+            AWS: "*"
+          Condition:
+            StringLike:
+              aws:PrincipalArn:
+              - !GetAtt FbtLambdaStack.Outputs.LambdaFunctionArn
+              - !GetAtt FbtLambdaStack.Outputs.LambdaFunctionRoleArn
+              - !GetAtt ClyLambdaStack.Outputs.LambdaFunctionArn
+              - !GetAtt ClyLambdaStack.Outputs.LambdaFunctionRoleArn
+              - !GetAtt R2rLambdaStack.Outputs.LambdaFunctionArn
+              - !GetAtt R2rLambdaStack.Outputs.LambdaFunctionRoleArn
+              - !GetAtt PplLambdaStack.Outputs.LambdaFunctionRoleArn
+              - !GetAtt PplLambdaStack.Outputs.LambdaFunctionArn
+          Resource: !GetAtt CommonResourcesStack.Outputs.SecretARN
+  ApiStack:
+    # This stack creates API Gateway
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${ArtifactsBucket}.s3.amazonaws.com/templates/api/api.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        VpcEndpointId: !Ref VpcEndpointId
+        ArtifactsBucket: !Ref ArtifactsBucket
+        FbtLambdaFunctionArn: !GetAtt FbtLambdaStack.Outputs.LambdaFunctionArnWithAlias
+        ClyLambdaFunctionArn: !GetAtt ClyLambdaStack.Outputs.LambdaFunctionArnWithAlias
+        R2rLambdaFunctionArn: !GetAtt R2rLambdaStack.Outputs.LambdaFunctionArnWithAlias
+        PplLambdaFunctionArn: !GetAtt PplLambdaStack.Outputs.LambdaFunctionArnWithAlias
+
+Outputs:
+  LambdaArtifactBucketName:
+    Description: Name of bucket where Lambda function artifacts would be stored
+    Value: !GetAtt CommonResourcesStack.Outputs.LambdaArtifactBucketName
+  KmsKeyArn:
+    Description: ARN of KMS Key used to encrypt Lambda Artifacts bucket
+    Value: !GetAtt CommonResourcesStack.Outputs.KmsKeyArn

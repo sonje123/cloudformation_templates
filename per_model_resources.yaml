@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creation of Model Specific Resources
+Parameters:
+  Environment:
+    Type: String
+    Description: An environment name that is prefixed/suffixed to resource names
+  KmsKey:
+    Type: String
+    Description: KMS key used to encrypt and decrypt the S3 buckets used by SageMaker
+  ModelPrefix:
+    Type: String
+    Description: Prefix used for Lambda function
+  RedshiftRoleARN:
+    Description: ARN of role used by Redshift cluster
+    Type: String
+Resources:
+  AirflowParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: 'Stores variables used by Airflow DAG, python and sql code'
+      Name: !Sub /mlops/airflow/variables/${Environment}/${ModelPrefix}
+      Value: '{"key": "value"}'
+      Type: String
+  SageMakerArtifactBucket:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: Bucket stores temporary data, no need for access logs
+    Type: "AWS::S3::Bucket"
+    # checkov:skip=CKV_AWS_18:Logging not required for intermediate file bucket
+    # checkov:skip=CKV_AWS_21:Versioning not required for intermediate file bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref KmsKey
+              SSEAlgorithm: "aws:kms"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    UpdateReplacePolicy: Retain
+  SageMakerArtifactBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref SageMakerArtifactBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - s3:Get*
+              - s3:Put*
+              - s3:DeleteObject
+              - s3:List*
+            Effect: Allow
+            Principal:
+              AWS: !Ref RedshiftRoleARN
+            Resource:
+              - "Fn::GetAtt":
+                  - SageMakerArtifactBucket
+                  - Arn
+              - "Fn::Join":
+                  - ""
+                  - - "Fn::GetAtt":
+                        - SageMakerArtifactBucket
+                        - Arn
+                    - /*
+          - Effect: Deny
+            Principal:
+              AWS: "*"
+            Action: "s3:*"
+            Resource:
+              - "Fn::GetAtt":
+                  - SageMakerArtifactBucket
+                  - Arn
+              - "Fn::Join":
+                  - ""
+                  - - "Fn::GetAtt":
+                        - SageMakerArtifactBucket
+                        - Arn
+                    - /*
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+Outputs:
+  SageMakerArtifactBucketName:
+    Description: Name of bucket where SageMaker artifacts would be stored for the model
+    Value: !Ref SageMakerArtifactBucket
